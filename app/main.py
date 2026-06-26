@@ -370,14 +370,81 @@ async def analyze_ticket(request: Request):
                 case_type = "other"
                 severity = "low"
                 
-            # Build a richer agent_summary referencing matched tx if available
-            txn_ref = f" (matched transaction: {relevant_tx_id})" if relevant_tx_id else ""
-            agent_summary = f"[Fallback] {case_type.replace('_', ' ').title()} issue detected{txn_ref}. Gemini classification unavailable."
-            recommended_next_action = f"Verify transaction details with customer and route to the appropriate team for {case_type}."
-            if lang == "bn":
-                customer_reply = "আমরা আপনার অভিযোগটি পেয়েছি এবং এটি তদন্ত করছি। অনুগ্রহ করে কারো সাথে আপনার পিন বা ওটিপি শেয়ার করবেন না।"
+            # Build case-specific fallback details
+            txn_ref = f" {relevant_tx_id}" if relevant_tx_id else ""
+            
+            # Agent Summary
+            if case_type == "agent_cash_in_issue":
+                agent_summary = f"[Fallback] Customer reports cash-in via{txn_ref} not reflected in balance. Transaction status is pending."
+            elif case_type == "wrong_transfer":
+                agent_summary = f"[Fallback] Customer reports sending money via{txn_ref} to the wrong recipient."
+            elif case_type == "payment_failed":
+                agent_summary = f"[Fallback] Customer reports payment failure via{txn_ref} with balance deducted."
+            elif case_type == "duplicate_payment":
+                agent_summary = f"[Fallback] Customer reports duplicate payment for transaction{txn_ref}."
+            elif case_type == "merchant_settlement_delay":
+                agent_summary = f"[Fallback] Merchant reports settlement delay for transaction{txn_ref}."
+            elif case_type == "phishing_or_social_engineering":
+                agent_summary = "[Fallback] Potential phishing or credential safety threat reported."
+            elif case_type == "refund_request":
+                agent_summary = f"[Fallback] Customer requests refund for transaction{txn_ref}."
             else:
-                customer_reply = "We have received your ticket and are currently reviewing the details. Please do not share your PIN or OTP with anyone."
+                agent_summary = f"[Fallback] General support query{txn_ref}."
+
+            # Recommended Action
+            if case_type == "agent_cash_in_issue":
+                recommended_next_action = f"Investigate pending cash-in status with agent operations for {relevant_tx_id or 'transaction'}."
+            elif case_type == "wrong_transfer":
+                recommended_next_action = f"Verify transaction details with customer and route to dispute resolution for wrong transfer workflow."
+            elif case_type == "payment_failed":
+                recommended_next_action = f"Investigate ledger status for failed payment {relevant_tx_id or ''}. Reversal if deducted."
+            elif case_type == "duplicate_payment":
+                recommended_next_action = f"Verify duplicate with payments team and biller/merchant for {relevant_tx_id or ''}."
+            elif case_type == "merchant_settlement_delay":
+                recommended_next_action = f"Route to merchant operations to verify settlement batch status."
+            elif case_type == "phishing_or_social_engineering":
+                recommended_next_action = f"Escalate to fraud risk team immediately. Log any reported number."
+            elif case_type == "refund_request":
+                recommended_next_action = f"Inform customer refund depends on merchant policy. Guide customer to merchant."
+            else:
+                recommended_next_action = f"Verify transaction and customer details and route to appropriate desk."
+
+            # Customer Reply
+            txn_str = f" {relevant_tx_id}" if relevant_tx_id else ""
+            if lang == "bn":
+                if case_type == "agent_cash_in_issue":
+                    customer_reply = f"আপনার লেনদেন{txn_str} এর বিষয়ে আমরা অবগত হয়েছি। আমাদের এজেন্ট অপারেশন্স দল এটি দ্রুত যাচাই করবে এবং অফিসিয়াল চ্যানেলে আপনাকে জানাবে। অনুগ্রহ করে কারো সাথে আপনার পিন বা ওটিপি শেয়ার করবেন না।"
+                elif case_type == "wrong_transfer":
+                    customer_reply = f"আপনার লেনদেন{txn_str} এর বিষয়ে আমরা অবগত হয়েছি। আমাদের বিরোধ নিষ্পত্তি দল ভুল স্থানান্তরের কেসটি পর্যালোচনা করবে এবং অফিসিয়াল চ্যানেলে আপনার সাথে যোগাযোগ করবে। অনুগ্রহ করে কারো সাথে আপনার পিন বা ওটিপি শেয়ার করবেন না।"
+                elif case_type == "payment_failed":
+                    customer_reply = f"আমরা অবগত হয়েছি যে লেনদেন{txn_str} এর কারণে আপনার ব্যালেন্স কাটা হতে পারে। আমাদের পেমেন্ট টিম বিষয়টি পর্যালোচনা করবে এবং কোনো যোগ্য পরিমাণ অফিসিয়াল চ্যানেলে ফেরত দেওয়া হবে। অনুগ্রহ করে কারো সাথে আপনার পিন বা ওটিপি শেয়ার করবেন না।"
+                elif case_type == "duplicate_payment":
+                    customer_reply = f"আমরা লেনদেন{txn_str} এর জন্য সম্ভাব্য ডুপ্লিকেট পেমেন্টটি লক্ষ্য করেছি। আমাদের পেমেন্ট টিম এটি যাচাই করবে এবং কোনো যোগ্য পরিমাণ অফিসিয়াল চ্যানেলে ফেরত দেওয়া হবে। অনুগ্রহ করে কারো সাথে আপনার পিন বা ওটিপি শেয়ার করবেন না।"
+                elif case_type == "merchant_settlement_delay":
+                    customer_reply = f"সেটেলমেন্ট লেনদেন{txn_str} সংক্রান্ত আপনার অভিযোগটি আমরা পেয়েছি। আমাদের মার্চেন্ট অপারেশন্স দল এটি যাচাই করে আপনাকে অফিসিয়াল চ্যানেলে আপডেট জানাবে।"
+                elif case_type == "phishing_or_social_engineering":
+                    customer_reply = "আপনার সুরক্ষার জন্য অনুগ্রহ করে কারো সাথে আপনার পিন (PIN) বা ওটিপি (OTP) শেয়ার করবেন না। কোনো সন্দেহজনক নম্বর থেকে কল আসলে আমাদের অফিসিয়াল হেল্পলাইন ১৬২৪৭ নম্বরে জানান।"
+                elif case_type == "refund_request":
+                    customer_reply = "যোগাযোগ করার জন্য ধন্যবাদ। মার্চেন্ট পেমেন্টের রিফান্ড মার্চেন্টের নিজস্ব নীতির ওপর নির্ভর করে। আমরা মার্চেন্টের সাথে সরাসরি যোগাযোগ করার পরামর্শ দিচ্ছি। অনুগ্রহ করে কারো সাথে আপনার পিন বা ওটিপি শেয়ার করবেন না।"
+                else:
+                    customer_reply = "আমরা আপনার অভিযোগটি পেয়েছি এবং এটি তদন্ত করছি। অনুগ্রহ করে কারো সাথে আপনার পিন বা ওটিপি শেয়ার করবেন না।"
+            else:
+                if case_type == "agent_cash_in_issue":
+                    customer_reply = f"We have noted your concern about cash-in transaction{txn_str}. Our agent operations team will verify the transaction status and update you. Please do not share your PIN or OTP with anyone."
+                elif case_type == "wrong_transfer":
+                    customer_reply = f"We have noted your concern about transaction{txn_str}. Our dispute team will review the wrong transfer case and contact you through official channels. Please do not share your PIN or OTP with anyone."
+                elif case_type == "payment_failed":
+                    customer_reply = f"We have noted that transaction{txn_str} may have caused an unexpected balance deduction. Our payments team will review the case and any eligible amount will be returned through official channels. Please do not share your PIN or OTP with anyone."
+                elif case_type == "duplicate_payment":
+                    customer_reply = f"We have noted the possible duplicate payment for transaction{txn_str}. Our payments team will verify with the biller and any eligible amount will be returned through official channels. Please do not share your PIN or OTP with anyone."
+                elif case_type == "merchant_settlement_delay":
+                    customer_reply = f"We have noted your concern about settlement{txn_str}. Our merchant operations team will check the batch status and update you on the expected settlement time through official channels."
+                elif case_type == "phishing_or_social_engineering":
+                    customer_reply = "Thank you for reaching out before sharing any information. We never ask for your PIN, OTP, or password under any circumstances. Please do not share these with anyone, even if they claim to be from us."
+                elif case_type == "refund_request":
+                    customer_reply = "Thank you for reaching out. Refunds for completed merchant payments depend on the merchant's own policy. We recommend contacting the merchant directly. Please do not share your PIN or OTP with anyone."
+                else:
+                    customer_reply = "We have received your ticket and are currently reviewing the details. Please do not share your PIN or OTP with anyone."
             confidence = 0.5
 
     # 5. Derive department
