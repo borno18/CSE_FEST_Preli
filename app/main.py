@@ -269,6 +269,7 @@ async def analyze_ticket(request: Request):
         verdict = "insufficient_data"
     else:
         # 4. Hybrid Classifier Flow
+        fallback_err_msg = ""
         try:
             # Format clean history list for LLM context
             history_dicts = [tx.model_dump() for tx in clean_history]
@@ -307,6 +308,7 @@ async def analyze_ticket(request: Request):
             
         except Exception as e:
             logger.warning(f"Failed to fetch or parse Gemini classification: {str(e)}. Using rules fallback.")
+            fallback_err_msg = str(e)
             # Deterministic Fallback Logic
             reason_codes = ["rules_fallback_due_to_error"]
             # Classify case_type using keywords + transaction history context
@@ -485,7 +487,7 @@ async def analyze_ticket(request: Request):
                 reason_codes.extend(["merchant_settlement", "delay", "pending"])
             
             if not reason_codes:
-                reason_codes = ["rules_fallback_due_to_error"]
+                reason_codes = [f"rules_fallback_due_to_error: {fallback_err_msg}"] if fallback_err_msg else ["rules_fallback_due_to_error"]
 
     # 5. Derive department
     department = derive_department(case_type, complaint_stripped)
