@@ -1,4 +1,5 @@
 import time
+import copy
 import logging
 from typing import Dict, Any, List, Optional
 from fastapi import FastAPI, Request, HTTPException, status
@@ -108,6 +109,29 @@ ALLOWED_CASE_TYPES = {
 }
 ALLOWED_SEVERITIES = {'low', 'medium', 'high', 'critical'}
 
+def _inline_schema(schema: dict) -> dict:
+    """
+    Resolve all $defs/$ref entries inline so that openapi_extra schemas
+    can be embedded in the OpenAPI document without unresolvable $ref pointers.
+    """
+    schema = copy.deepcopy(schema)
+    defs = schema.pop("$defs", {})
+
+    def resolve(obj):
+        if isinstance(obj, dict):
+            if "$ref" in obj:
+                ref = obj["$ref"]
+                if ref.startswith("#/$defs/"):
+                    def_name = ref[len("#/$defs/"):]
+                    if def_name in defs:
+                        return resolve(copy.deepcopy(defs[def_name]))
+            return {k: resolve(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [resolve(item) for item in obj]
+        return obj
+
+    return resolve(schema)
+
 @app.post(
     "/analyze-ticket",
     response_model=AnalyzeTicketResponse,
@@ -117,7 +141,7 @@ ALLOWED_SEVERITIES = {'low', 'medium', 'high', 'critical'}
             "required": True,
             "content": {
                 "application/json": {
-                    "schema": AnalyzeTicketRequest.model_json_schema(),
+                    "schema": _inline_schema(AnalyzeTicketRequest.model_json_schema()),
                     "example": {
                         "ticket_id": "TKT-001",
                         "complaint": "I sent 5000 taka to a wrong number around 2pm today. I think I typed it wrong. Please help.",
