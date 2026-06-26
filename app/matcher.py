@@ -161,6 +161,37 @@ def analyze_evidence(
             score += 2.0
             reasons.append("status_completed_match")
             
+        # 5. Temporal clue matching
+        try:
+            # Assumes ISO timestamp format containing Txx:xx:xx
+            if "T" in tx.timestamp:
+                time_part = tx.timestamp.split("T")[1]
+                tx_hour = int(time_part.split(":")[0])
+                
+                time_matched = False
+                # Morning: 5 AM to 12 PM
+                if any(kw in normalized_complaint for kw in ["morning", "sokal", "সকাল", "সকালে", "am"]):
+                    if 5 <= tx_hour < 12:
+                        time_matched = True
+                # Afternoon: 12 PM to 5 PM
+                elif any(kw in normalized_complaint for kw in ["afternoon", "dupur", "bikel", "bikale", "দুপুর", "দুপুরে", "বিকাল", "বিকালে"]):
+                    if 12 <= tx_hour < 17:
+                        time_matched = True
+                # Evening: 5 PM to 9 PM
+                elif any(kw in normalized_complaint for kw in ["evening", "shondha", "সন্ধ্যা", "সন্ধ্যায়"]):
+                    if 17 <= tx_hour < 21:
+                        time_matched = True
+                # Night: 9 PM to 5 AM
+                elif any(kw in normalized_complaint for kw in ["night", "rat", "rate", "রাত", "রাতে", "midnight", "মধ্যরাত"]):
+                    if tx_hour >= 21 or tx_hour < 5:
+                        time_matched = True
+                        
+                if time_matched:
+                    score += 3.0
+                    reasons.append("time_match")
+        except Exception:
+            pass
+            
         if score > 0:
             scored_txs.append((tx, score, reasons))
 

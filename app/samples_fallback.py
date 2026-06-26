@@ -174,5 +174,19 @@ SAMPLE_EXPECTED_RESPONSES = {
             "duplicate_payment",
             "biller_verification_required"
         ]
+    },
+    "TKT-011": {
+        "ticket_id": "TKT-011",
+        "relevant_transaction_id": "TXN-11002",
+        "evidence_verdict": "consistent",
+        "case_type": "wrong_transfer",
+        "severity": "high",
+        "department": "dispute_resolution",
+        "agent_summary": "Customer reports sending 3500 BDT to the wrong recipient this afternoon. TXN-11002 best matches complaint timing.",
+        "recommended_next_action": "Initiate wrong-transfer review for TXN-11002.",
+        "customer_reply": "We have received your concern regarding transaction TXN-11002. Our dispute team will review the case. Please never share your PIN or OTP.",
+        "human_review_required": True,
+        "confidence": 0.82,
+        "reason_codes": ["time_match", "wrong_transfer"]
     }
 }

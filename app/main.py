@@ -448,6 +448,45 @@ async def analyze_ticket(request: Request):
                     customer_reply = "We have received your ticket and are currently reviewing the details. Please do not share your PIN or OTP with anyone."
             confidence = 0.5
 
+            # Special dynamic override for wrong transfer with time match
+            if case_type == "wrong_transfer" and "time_match" in match_reasons:
+                time_of_day = "timing"
+                if any(kw in comp_lower for kw in ["afternoon", "দুপুর", "দুপুরে", "বিকাল", "বিকালে"]):
+                    time_of_day = "this afternoon"
+                elif any(kw in comp_lower for kw in ["morning", "সকাল", "সকালে"]):
+                    time_of_day = "this morning"
+                elif any(kw in comp_lower for kw in ["evening", "সন্ধ্যা", "সন্ধ্যায়"]):
+                    time_of_day = "this evening"
+                elif any(kw in comp_lower for kw in ["night", "রাত", "রাতে"]):
+                    time_of_day = "tonight"
+                
+                amt_str = f" {int(matched_amount)}" if matched_amount else ""
+                agent_summary = f"Customer reports sending{amt_str} BDT to the wrong recipient {time_of_day}. {relevant_tx_id} best matches complaint timing."
+                recommended_next_action = f"Initiate wrong-transfer review for {relevant_tx_id}."
+                confidence = 0.82
+                if lang == "bn":
+                    customer_reply = f"আপনার লেনদেন {relevant_tx_id} এর বিষয়ে আমরা অবগত হয়েছি। আমাদের বিরোধ নিষ্পত্তি দল কেসটি পর্যালোচনা করবে। অনুগ্রহ করে কখনো আপনার পিন বা ওটিপি শেয়ার করবেন না।"
+                else:
+                    customer_reply = f"We have received your concern regarding transaction {relevant_tx_id}. Our dispute team will review the case. Please never share your PIN or OTP."
+
+            # Construct fallback reason_codes
+            reason_codes = []
+            if "time_match" in match_reasons:
+                reason_codes.append("time_match")
+            if case_type == "wrong_transfer":
+                reason_codes.append("wrong_transfer")
+            elif case_type == "payment_failed":
+                reason_codes.append("payment_failed")
+            elif case_type == "duplicate_payment":
+                reason_codes.append("duplicate_payment")
+            elif case_type == "agent_cash_in_issue":
+                reason_codes.extend(["agent_cash_in", "pending_transaction", "agent_ops"])
+            elif case_type == "merchant_settlement_delay":
+                reason_codes.extend(["merchant_settlement", "delay", "pending"])
+            
+            if not reason_codes:
+                reason_codes = ["rules_fallback_due_to_error"]
+
     # 5. Derive department
     department = derive_department(case_type, complaint_stripped)
     
