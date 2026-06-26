@@ -226,7 +226,7 @@ async def analyze_ticket(request: Request):
                 language=lang
             )
             
-            # Map LLM outputs
+            # Map LLM outputs — TEXT FIELDS ONLY
             llm_case_type = llm_result.get("case_type", "other")
             llm_severity = llm_result.get("severity", "low")
             
@@ -242,29 +242,45 @@ async def analyze_ticket(request: Request):
             confidence = llm_result.get("confidence", 0.5)
             reason_codes = llm_result.get("reason_codes", ["llm_success"])
             
+            # CRITICAL: evidence_verdict and relevant_transaction_id are
+            # ALWAYS set by the deterministic matcher, never by the LLM.
+            # The LLM only improves text quality (agent_summary, customer_reply).
+            # This ensures the "investigator twist" is always authoritative.
+            # (verdict and relevant_tx_id were already set above by analyze_evidence())
+
+            
         except Exception as e:
             logger.warning(f"Failed to fetch or parse Gemini classification: {str(e)}. Using rules fallback.")
             # Deterministic Fallback Logic
             reason_codes = ["rules_fallback_due_to_error"]
             # Classify case_type based on keywords
             comp_lower = complaint_stripped.lower()
-            if any(kw in comp_lower for kw in ["wrong", "typed wrong", "mistake", "ভুল"]):
+            # Determine if there are completed transfers in history (strong signal for wrong_transfer)
+            has_completed_transfers = any(
+                t.type == "transfer" and t.status == "completed" for t in clean_history
+            )
+            if any(kw in comp_lower for kw in ["wrong", "typed wrong", "mistake", "stranger", "ভুল"]):
                 case_type = "wrong_transfer"
                 severity = "high"
-            elif any(kw in comp_lower for kw in ["fail", "deduct", "not received", "didn't get", "failed"]):
-                case_type = "payment_failed"
+            elif any(kw in comp_lower for kw in ["sent", "transfer", "পাঠিয়েছি", "পাঠিয়েছ"]) and has_completed_transfers:
+                # Customer is complaining about a transfer that shows completed on our side
+                # but recipient says not received — classic wrong_transfer / dispute
+                case_type = "wrong_transfer"
+                severity = "high"
+            elif any(kw in comp_lower for kw in ["duplicate", "twice", "double", "ডাবল"]):
+                case_type = "duplicate_payment"
                 severity = "high"
             elif any(kw in comp_lower for kw in ["refund", "money back", "return", "রিফান্ড"]):
                 case_type = "refund_request"
                 severity = "low"
-            elif any(kw in comp_lower for kw in ["duplicate", "twice", "double", "ডাবল"]):
-                case_type = "duplicate_payment"
-                severity = "high"
             elif any(kw in comp_lower for kw in ["settle", "settlement", "সেটেলমেন্ট"]):
                 case_type = "merchant_settlement_delay"
                 severity = "medium"
             elif any(kw in comp_lower for kw in ["cash in", "deposit", "ক্যাশ ইন", "জমা"]):
                 case_type = "agent_cash_in_issue"
+                severity = "high"
+            elif any(kw in comp_lower for kw in ["fail", "deduct", "not received", "didn't get", "failed"]):
+                case_type = "payment_failed"
                 severity = "high"
             else:
                 case_type = "other"
