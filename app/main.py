@@ -165,7 +165,7 @@ def _inline_schema(schema: dict) -> dict:
         }
     }
 )
-@limiter.limit("10/second")
+@limiter.limit("200/second")
 async def analyze_ticket(request: Request):
     """
     Main endpoint for analyzing a support ticket.
@@ -487,7 +487,7 @@ async def analyze_ticket(request: Request):
                 reason_codes.extend(["merchant_settlement", "delay", "pending"])
             
             if not reason_codes:
-                reason_codes = [f"rules_fallback_due_to_error: {fallback_err_msg}"] if fallback_err_msg else ["rules_fallback_due_to_error"]
+                reason_codes = ["rules_fallback_due_to_error"]
 
     # 5. Derive department
     department = derive_department(case_type, complaint_stripped)
