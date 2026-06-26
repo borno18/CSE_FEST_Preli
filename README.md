@@ -31,20 +31,27 @@
    python -m pytest
    ```
 
-### Docker
+### Docker Hub (judges — fastest)
+```bash
+# Pull and run in one step (no build needed)
+docker run -p 8000:8000 -e GEMINI_API_KEY=<your_key> macloreniz/queuestorm:latest
+```
+See [RUNBOOK.md](RUNBOOK.md) for the full judge-facing runbook with all three deployment options (Docker Hub, build from source, pure Python).
+
+### Docker (build locally)
 1. Build the lightweight Docker image:
    ```bash
    docker build -t queuestorm-investigator .
    ```
 2. Run the Docker container exposing port 8000:
    ```bash
-   docker run -p 8000:8000 --env-file .env queuestorm-investigator
+   docker run -p 8000:8000 -e GEMINI_API_KEY=<your_key> queuestorm-investigator
    ```
 
 ### Live deployment
-Base URL: `https://your-deployed-service.com` (replace with your actual hosted endpoint)
-- `GET  /health` - Immediate status verification
-- `POST /analyze-ticket` - Perform evidence-matching and ticket triage
+If a live URL is available during the evaluation window it will be listed here.
+- `GET  /health` — Returns `{"status":"ok"}` within 60 s of start
+- `POST /analyze-ticket` — Evidence matching + ticket triage
 
 ## Tech Stack
 - **Language**: Python 3.11/3.12
