@@ -108,7 +108,38 @@ ALLOWED_CASE_TYPES = {
 }
 ALLOWED_SEVERITIES = {'low', 'medium', 'high', 'critical'}
 
-@app.post("/analyze-ticket", response_model=AnalyzeTicketResponse, status_code=status.HTTP_200_OK)
+@app.post(
+    "/analyze-ticket",
+    response_model=AnalyzeTicketResponse,
+    status_code=status.HTTP_200_OK,
+    openapi_extra={
+        "requestBody": {
+            "required": True,
+            "content": {
+                "application/json": {
+                    "schema": AnalyzeTicketRequest.model_json_schema(),
+                    "example": {
+                        "ticket_id": "TKT-001",
+                        "complaint": "I sent 5000 taka to a wrong number around 2pm today. I think I typed it wrong. Please help.",
+                        "language": "en",
+                        "channel": "in_app_chat",
+                        "user_type": "customer",
+                        "transaction_history": [
+                            {
+                                "transaction_id": "TXN-9101",
+                                "timestamp": "2026-04-14T14:08:22Z",
+                                "type": "transfer",
+                                "amount": 5000,
+                                "counterparty": "+8801719876543",
+                                "status": "completed"
+                            }
+                        ]
+                    }
+                }
+            }
+        }
+    }
+)
 @limiter.limit("10/second")
 async def analyze_ticket(request: Request):
     """
