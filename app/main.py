@@ -1,0 +1,321 @@
+import time
+import logging
+from typing import Dict, Any, List, Optional
+from fastapi import FastAPI, Request, HTTPException, status
+from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+
+from app.config import settings
+from app.schemas import (
+    AnalyzeTicketRequest,
+    AnalyzeTicketResponse,
+    TransactionHistoryEntry
+)
+from app.rules import (
+    check_phishing_signals,
+    clean_customer_reply,
+    clean_recommended_action
+)
+from app.matcher import analyze_evidence
+from app.classifier import classify_ticket_with_llm
+
+# Setup logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+)
+logger = logging.getLogger("queuestorm")
+
+# Setup Rate Limiter
+limiter = Limiter(key_func=get_remote_address)
+app = FastAPI(title="QueueStorm Investigator API")
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# CORS configurations
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[settings.FRONTEND_ORIGIN],
+    allow_credentials=True if settings.FRONTEND_ORIGIN != "*" else False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+@app.get("/health", status_code=status.HTTP_200_OK)
+async def health_check():
+    """Lightweight health check endpoint responding immediately."""
+    return {"status": "ok"}
+
+def derive_department(case_type: str, complaint: str) -> str:
+    """
+    Derive the department name deterministically from the case type and complaint text.
+    - wrong_transfer, contested refund_request -> dispute_resolution
+    - payment_failed, duplicate_payment         -> payments_ops
+    - phishing_or_social_engineering            -> fraud_risk
+    - merchant_settlement_delay                 -> merchant_operations
+    - agent_cash_in_issue                       -> agent_operations
+    - refund_request (non-contested), other     -> customer_support
+    """
+    ct_lower = case_type.lower()
+    comp_lower = complaint.lower()
+    
+    if ct_lower == "wrong_transfer":
+        return "dispute_resolution"
+    elif ct_lower in ("payment_failed", "duplicate_payment"):
+        return "payments_ops"
+    elif ct_lower == "phishing_or_social_engineering":
+        return "fraud_risk"
+    elif ct_lower == "merchant_settlement_delay":
+        return "merchant_operations"
+    elif ct_lower == "agent_cash_in_issue":
+        return "agent_operations"
+    elif ct_lower == "refund_request":
+        dispute_keywords = ["contest", "dispute", "complain", "legal", "police", "court", "wrong", "cheat", "force", "lawyer", "scam", "fraud"]
+        if any(kw in comp_lower for kw in dispute_keywords):
+            return "dispute_resolution"
+        return "customer_support"
+    else:
+        return "customer_support"
+
+def check_human_review_required(
+    case_type: str,
+    evidence_verdict: str,
+    relevant_transaction_id: Optional[str],
+    amount_involved: float,
+    high_value_threshold: float
+) -> bool:
+    """
+    Determine if human review is required using a clean, deterministic rule.
+    """
+    if case_type == "phishing_or_social_engineering":
+        return True
+    if evidence_verdict == "inconsistent":
+        return True
+    if relevant_transaction_id is not None:
+        if case_type in ["wrong_transfer", "duplicate_payment", "agent_cash_in_issue"]:
+            return True
+        if amount_involved >= high_value_threshold:
+            return True
+    return False
+
+# Enums check to ensure output complies strictly with schemas
+ALLOWED_CASE_TYPES = {
+    'wrong_transfer', 'payment_failed', 'refund_request', 'duplicate_payment',
+    'merchant_settlement_delay', 'agent_cash_in_issue', 'phishing_or_social_engineering', 'other'
+}
+ALLOWED_SEVERITIES = {'low', 'medium', 'high', 'critical'}
+
+@app.post("/analyze-ticket", response_model=AnalyzeTicketResponse, status_code=status.HTTP_200_OK)
+@limiter.limit("10/second")
+async def analyze_ticket(request: Request):
+    """
+    Main endpoint for analyzing a support ticket.
+    Defensively parses payload, performs evidence matching, runs hybrid logic, and filters output.
+    """
+    start_time = time.perf_counter()
+    
+    # 1. Defensive Parsing
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(status_code=400, content={"error": "invalid JSON"})
+        
+    # Check ticket_id
+    ticket_id = body.get("ticket_id")
+    if ticket_id is None:
+        return JSONResponse(status_code=400, content={"error": "missing ticket_id"})
+    if not isinstance(ticket_id, str):
+        return JSONResponse(status_code=400, content={"error": "ticket_id must be a string"})
+        
+    # Check complaint
+    complaint = body.get("complaint")
+    if complaint is None:
+        return JSONResponse(status_code=400, content={"error": "missing complaint"})
+    if not isinstance(complaint, str):
+        return JSONResponse(status_code=400, content={"error": "complaint must be a string"})
+        
+    complaint_stripped = complaint.strip()
+    if not complaint_stripped:
+        return JSONResponse(status_code=422, content={"error": "complaint cannot be empty or contain only whitespace"})
+
+    # Defensive parsing of transaction history: skip entries missing subfields or with wrong types
+    clean_history: List[TransactionHistoryEntry] = []
+    raw_history = body.get("transaction_history")
+    
+    # Standardize empty/null history
+    if raw_history is not None and isinstance(raw_history, list):
+        for entry in raw_history:
+            if not isinstance(entry, dict):
+                continue
+            # Check required sub-fields
+            required_subfields = ["transaction_id", "timestamp", "type", "amount", "counterparty", "status"]
+            if not all(k in entry for k in required_subfields):
+                continue  # skip entry missing sub-field
+            # Coerce amount if possible
+            try:
+                entry["amount"] = float(entry["amount"])
+            except (ValueError, TypeError):
+                continue  # skip entry with bad amount type
+            # Enforce enums
+            if entry["type"] not in ["transfer", "payment", "cash_in", "cash_out", "settlement", "refund"]:
+                continue
+            if entry["status"] not in ["completed", "failed", "pending", "reversed"]:
+                continue
+            try:
+                clean_history.append(TransactionHistoryEntry(**entry))
+            except Exception:
+                continue
+
+    # Prepare input schemas/payloads
+    lang = body.get("language")
+    if lang not in ["en", "bn", "mixed"]:
+        lang = "en"  # fallback default
+        
+    # 2. Phishing pre-check override (Rules Engine)
+    phishing_override = check_phishing_signals(complaint_stripped)
+    
+    # 3. Deterministic Evidence Matcher
+    relevant_tx_id, verdict, match_reasons = analyze_evidence(complaint_stripped, clean_history)
+    
+    # Find matched transaction amount if any
+    matched_amount = 0.0
+    if relevant_tx_id:
+        for tx in clean_history:
+            if tx.transaction_id == relevant_tx_id:
+                matched_amount = tx.amount
+                break
+
+    # Initialize response defaults
+    case_type = "other"
+    severity = "low"
+    agent_summary = "Classification fallback."
+    recommended_next_action = "Review ticket."
+    customer_reply = "We have received your ticket."
+    confidence = 0.5
+    reason_codes = ["rules_fallback"]
+    
+    if phishing_override:
+        # Override fields
+        case_type = "phishing_or_social_engineering"
+        severity = "critical"
+        agent_summary = "Pre-check detected potential phishing or credential safety risk."
+        recommended_next_action = "Escalate to fraud_risk team immediately. Confirm to customer that the company never asks for OTP."
+        if lang == "bn":
+            customer_reply = "আপনার সুরক্ষার জন্য অনুগ্রহ করে কারো সাথে আপনার পিন (PIN) বা ওটিপি (OTP) শেয়ার করবেন না। কোনো সন্দেহজনক নম্বর থেকে কল আসলে আমাদের অফিসিয়াল হেল্পলাইন ১৬২৪৭ নম্বরে জানান।"
+        else:
+            customer_reply = "Thank you for reaching out before sharing any information. We never ask for your PIN, OTP, or password under any circumstances. Please do not share these with anyone."
+        confidence = 1.0
+        reason_codes = ["phishing_precheck_override"]
+        relevant_tx_id = None
+        verdict = "insufficient_data"
+    else:
+        # 4. Hybrid Classifier Flow
+        try:
+            # Format clean history list for LLM context
+            history_dicts = [tx.model_dump() for tx in clean_history]
+            
+            # Request Gemini AI
+            llm_result = await classify_ticket_with_llm(
+                complaint=complaint_stripped,
+                matched_txn_id=relevant_tx_id,
+                verdict=verdict,
+                history=history_dicts,
+                language=lang
+            )
+            
+            # Map LLM outputs
+            llm_case_type = llm_result.get("case_type", "other")
+            llm_severity = llm_result.get("severity", "low")
+            
+            # Ensure enums strictness
+            if llm_case_type in ALLOWED_CASE_TYPES:
+                case_type = llm_case_type
+            if llm_severity in ALLOWED_SEVERITIES:
+                severity = llm_severity
+                
+            agent_summary = llm_result.get("agent_summary", agent_summary)
+            recommended_next_action = llm_result.get("recommended_next_action", recommended_next_action)
+            customer_reply = llm_result.get("customer_reply", customer_reply)
+            confidence = llm_result.get("confidence", 0.5)
+            reason_codes = llm_result.get("reason_codes", ["llm_success"])
+            
+        except Exception as e:
+            logger.warning(f"Failed to fetch or parse Gemini classification: {str(e)}. Using rules fallback.")
+            # Deterministic Fallback Logic
+            reason_codes = ["rules_fallback_due_to_error"]
+            # Classify case_type based on keywords
+            comp_lower = complaint_stripped.lower()
+            if any(kw in comp_lower for kw in ["wrong", "typed wrong", "mistake", "ভুল"]):
+                case_type = "wrong_transfer"
+                severity = "high"
+            elif any(kw in comp_lower for kw in ["fail", "deduct", "not received", "didn't get", "failed"]):
+                case_type = "payment_failed"
+                severity = "high"
+            elif any(kw in comp_lower for kw in ["refund", "money back", "return", "রিফান্ড"]):
+                case_type = "refund_request"
+                severity = "low"
+            elif any(kw in comp_lower for kw in ["duplicate", "twice", "double", "ডাবল"]):
+                case_type = "duplicate_payment"
+                severity = "high"
+            elif any(kw in comp_lower for kw in ["settle", "settlement", "সেটেলমেন্ট"]):
+                case_type = "merchant_settlement_delay"
+                severity = "medium"
+            elif any(kw in comp_lower for kw in ["cash in", "deposit", "ক্যাশ ইন", "জমা"]):
+                case_type = "agent_cash_in_issue"
+                severity = "high"
+            else:
+                case_type = "other"
+                severity = "low"
+                
+            # Build a richer agent_summary referencing matched tx if available
+            txn_ref = f" (matched transaction: {relevant_tx_id})" if relevant_tx_id else ""
+            agent_summary = f"[Fallback] {case_type.replace('_', ' ').title()} issue detected{txn_ref}. Gemini classification unavailable."
+            recommended_next_action = f"Verify transaction details with customer and route to the appropriate team for {case_type}."
+            if lang == "bn":
+                customer_reply = "আমরা আপনার অভিযোগটি পেয়েছি এবং এটি তদন্ত করছি। অনুগ্রহ করে কারো সাথে আপনার পিন বা ওটিপি শেয়ার করবেন না।"
+            else:
+                customer_reply = "We have received your ticket and are currently reviewing the details. Please do not share your PIN or OTP with anyone."
+            confidence = 0.5
+
+    # 5. Derive department
+    department = derive_department(case_type, complaint_stripped)
+    
+    # 6. Post-processing safety filters
+    customer_reply = clean_customer_reply(customer_reply, case_type, lang)
+    recommended_next_action = clean_recommended_action(recommended_next_action)
+    
+    # 7. human_review_required calculation
+    human_review = check_human_review_required(
+        case_type=case_type,
+        evidence_verdict=verdict,
+        relevant_transaction_id=relevant_tx_id,
+        amount_involved=matched_amount,
+        high_value_threshold=settings.HIGH_VALUE_THRESHOLD
+    )
+    
+    latency_ms = int((time.perf_counter() - start_time) * 1000)
+    
+    # Log triage result without raw message content to keep logs safe
+    logger.info(
+        f"TriageResult: ticket_id={ticket_id} case_type={case_type} severity={severity} "
+        f"evidence_verdict={verdict} relevant_transaction_id={relevant_tx_id} "
+        f"department={department} human_review={human_review} latency_ms={latency_ms}"
+    )
+    
+    return AnalyzeTicketResponse(
+        ticket_id=ticket_id,
+        relevant_transaction_id=relevant_tx_id,
+        evidence_verdict=verdict,
+        case_type=case_type,
+        severity=severity,
+        department=department,
+        agent_summary=agent_summary,
+        recommended_next_action=recommended_next_action,
+        customer_reply=customer_reply,
+        human_review_required=human_review,
+        confidence=confidence,
+        reason_codes=reason_codes
+    )
