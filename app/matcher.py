@@ -84,8 +84,19 @@ def analyze_evidence(
     extracted_amounts = extract_amounts(complaint)
     
     # Keywords matching for types
-    has_wrong = any(kw in normalized_complaint for kw in ["wrong", "typed wrong", "mistake", "stranger", "ভুল", "ভুল নম্বরে", "ভুল নাম্বারে", "ভুল করে"])
-    has_failed = any(kw in normalized_complaint for kw in ["fail", "deduct", "not received", "didn't get", "failed", "ডিপোজিট হয়নি", "ব্যালেন্স কেটেছে", "ব্যালেন্সে আসেনি", "টাকা কেটেছে"])
+    # has_wrong: customer believes money went to wrong recipient OR recipient says they didn't get it
+    has_wrong = any(kw in normalized_complaint for kw in [
+        "wrong number", "wrong person", "wrong recipient", "wrong transfer", "wrong account",
+        "typed wrong", "mistake", "stranger", "didn't get", "did not get", "not received by",
+        "he didn't", "she didn't", "they didn't", "brother", "sister", "friend",
+        "ভুল", "ভুল নম্বরে", "ভুল নাম্বারে", "ভুল করে"
+    ])
+    # has_failed: balance deducted / payment technically failed (NOT colloquial "didn't receive")
+    has_failed = any(kw in normalized_complaint for kw in [
+        "app showed failed", "transaction failed", "payment failed", "deduct", "balance deducted",
+        "balance cut", "balance keteche", "failed", "kete geche",
+        "ডিপোজিট হয়নি", "ব্যালেন্স কেটেছে", "ব্যালেন্সে আসেনি", "টাকা কেটেছে"
+    ])
     has_refund = any(kw in normalized_complaint for kw in ["refund", "money back", "return", "রিফান্ড", "ফেরত"])
     has_duplicate = any(kw in normalized_complaint for kw in ["duplicate", "twice", "double", "two times", "ডাবল", "দুইবার", "২ বার", "ভুল করে দুই বার"])
     has_settlement = any(kw in normalized_complaint for kw in ["settle", "settlement", "merchant sales", "সেলস", "সেটেলমেন্ট"])

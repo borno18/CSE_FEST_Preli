@@ -308,35 +308,58 @@ async def analyze_ticket(request: Request):
             logger.warning(f"Failed to fetch or parse Gemini classification: {str(e)}. Using rules fallback.")
             # Deterministic Fallback Logic
             reason_codes = ["rules_fallback_due_to_error"]
-            # Classify case_type based on keywords
+            # Classify case_type using keywords + transaction history context
             comp_lower = complaint_stripped.lower()
-            # Determine if there are completed transfers in history (strong signal for wrong_transfer)
+            has_failed_tx = any(t.status == "failed" for t in clean_history)
+            has_pending_tx = any(t.status == "pending" for t in clean_history)
             has_completed_transfers = any(
                 t.type == "transfer" and t.status == "completed" for t in clean_history
             )
-            if any(kw in comp_lower for kw in ["wrong", "typed wrong", "mistake", "stranger", "ভুল"]):
-                case_type = "wrong_transfer"
-                severity = "high"
-            elif any(kw in comp_lower for kw in ["sent", "transfer", "পাঠিয়েছি", "পাঠিয়েছ"]) and has_completed_transfers:
-                # Customer is complaining about a transfer that shows completed on our side
-                # but recipient says not received — classic wrong_transfer / dispute
-                case_type = "wrong_transfer"
-                severity = "high"
-            elif any(kw in comp_lower for kw in ["duplicate", "twice", "double", "ডাবল"]):
-                case_type = "duplicate_payment"
-                severity = "high"
-            elif any(kw in comp_lower for kw in ["refund", "money back", "return", "রিফান্ড"]):
-                case_type = "refund_request"
-                severity = "low"
-            elif any(kw in comp_lower for kw in ["settle", "settlement", "সেটেলমেন্ট"]):
-                case_type = "merchant_settlement_delay"
-                severity = "medium"
-            elif any(kw in comp_lower for kw in ["cash in", "deposit", "ক্যাশ ইন", "জমা"]):
-                case_type = "agent_cash_in_issue"
-                severity = "high"
-            elif any(kw in comp_lower for kw in ["fail", "deduct", "not received", "didn't get", "failed"]):
+            # Priority 1: Technical payment failure — tx status beats "refund" keyword in text
+            if has_failed_tx and any(kw in comp_lower for kw in [
+                "fail", "deduct", "balance", "recharge", "bill", "pay", "showed"
+            ]):
                 case_type = "payment_failed"
                 severity = "high"
+            # Priority 2: Explicit duplicate signals
+            elif any(kw in comp_lower for kw in [
+                "duplicate", "twice", "double", "deducted twice", "charged twice", "two times"
+            ]):
+                case_type = "duplicate_payment"
+                severity = "high"
+            # Priority 3: Specific wrong-transfer phrases (NOT bare "wrong" — too broad)
+            elif any(kw in comp_lower for kw in [
+                "wrong number", "wrong person", "wrong recipient", "wrong transfer",
+                "typed wrong", "mistake", "stranger"
+            ]):
+                case_type = "wrong_transfer"
+                severity = "high"
+            # Priority 4: Transfer + completed tx where recipient didn't get it
+            elif any(kw in comp_lower for kw in [
+                "sent", "transfer", "didn't get", "did not get", "he says", "she says"
+            ]) and has_completed_transfers:
+                case_type = "wrong_transfer"
+                severity = "high"
+            # Priority 5: Refund request (only after payment_failed ruled out above)
+            elif any(kw in comp_lower for kw in ["refund", "money back", "return"]):
+                case_type = "refund_request"
+                severity = "low"
+            # Priority 6: Settlement delay
+            elif any(kw in comp_lower for kw in ["settle", "settlement"]):
+                case_type = "merchant_settlement_delay"
+                severity = "medium"
+            # Priority 7: Agent cash-in issue
+            elif any(kw in comp_lower for kw in ["cash in", "deposit", "cash-in"]):
+                case_type = "agent_cash_in_issue"
+                severity = "high"
+            # Priority 8: Generic payment failure
+            elif any(kw in comp_lower for kw in ["fail", "deduct", "failed"]) or has_failed_tx:
+                case_type = "payment_failed"
+                severity = "high"
+            # Priority 9: Pending with no other match
+            elif has_pending_tx:
+                case_type = "payment_failed"
+                severity = "medium"
             else:
                 case_type = "other"
                 severity = "low"
