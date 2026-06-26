@@ -202,10 +202,27 @@ def analyze_evidence(
     scored_txs.sort(key=lambda x: (x[1], x[0].timestamp), reverse=True)
     
     max_score = scored_txs[0][1]
+    matched_tx = scored_txs[0][0]
     
-    # If the highest score is too low (e.g. less than 8, meaning we didn't even match amount/counterparty),
-    # it's insufficient data.
-    if max_score < 8.0:
+    # Calculate how many transactions of the same type exist in history
+    type_matches_in_history = [t for t in history if t.type == matched_tx.type]
+    
+    # If the match score is at least 5.0 (meaning it matched the type/status or counterparty),
+    # AND either:
+    # 1. The score is >= 8.0 (strong match with amount/counterparty)
+    # 2. There is exactly 1 transaction in the entire history
+    # 3. There is exactly 1 transaction of this type in the history
+    # Then we accept it as a match!
+    is_acceptable = False
+    if max_score >= 8.0:
+        is_acceptable = True
+    elif max_score >= 5.0:
+        if len(history) == 1:
+            is_acceptable = True
+        elif len(type_matches_in_history) == 1:
+            is_acceptable = True
+            
+    if not is_acceptable:
         return None, "insufficient_data", ["low_matching_confidence"]
         
     # Check for ties or duplicates
