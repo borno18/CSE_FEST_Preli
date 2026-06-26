@@ -315,6 +315,7 @@ async def analyze_ticket(request: Request):
             has_completed_transfers = any(
                 t.type == "transfer" and t.status == "completed" for t in clean_history
             )
+            has_cashin_tx = any(t.type == "cash_in" for t in clean_history)
             # Priority 1: Technical payment failure — tx status beats "refund" keyword in text
             if has_failed_tx and any(kw in comp_lower for kw in [
                 "fail", "deduct", "balance", "recharge", "bill", "pay", "showed"
@@ -348,8 +349,13 @@ async def analyze_ticket(request: Request):
             elif any(kw in comp_lower for kw in ["settle", "settlement"]):
                 case_type = "merchant_settlement_delay"
                 severity = "medium"
-            # Priority 7: Agent cash-in issue
-            elif any(kw in comp_lower for kw in ["cash in", "deposit", "cash-in"]):
+            # Priority 7: Agent cash-in issue (check tx type + Bengali keywords)
+            elif any(kw in comp_lower for kw in [
+                "cash in", "deposit", "cash-in",
+                "\u0995\u09cd\u09af\u09be\u09b6 \u0987\u09a8", "\u099c\u09ae\u09be", "\u098f\u099c\u09c7\u09a8\u09cd\u099f"
+            ]) or (has_cashin_tx and any(kw in comp_lower for kw in [
+                "agent", "balance", "\u09ac\u09cd\u09af\u09be\u09b2\u09c7\u09a8\u09cd\u09b8", "\u0986\u09b8\u09c7\u09a8\u09bf", "\u099f\u09be\u0995\u09be"
+            ])):
                 case_type = "agent_cash_in_issue"
                 severity = "high"
             # Priority 8: Generic payment failure
