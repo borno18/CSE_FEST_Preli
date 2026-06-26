@@ -12,10 +12,13 @@ class Settings(BaseSettings):
 # Load settings
 settings = Settings()
 
+# ALWAYS prioritize system environment variables directly (overriding the .env file if set in Render/Vercel)
+env_key = os.environ.get("GEMINI_API_KEY")
+if env_key:
+    settings.GEMINI_API_KEY = env_key
+
 # Fail loudly on startup if GEMINI_API_KEY is missing
 if not settings.GEMINI_API_KEY:
-    settings.GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-    if not settings.GEMINI_API_KEY:
-        raise ValueError(
-            "CRITICAL STARTUP ERROR: GEMINI_API_KEY is not set in environment variables or .env file."
-        )
+    raise ValueError(
+        "CRITICAL STARTUP ERROR: GEMINI_API_KEY is not set in environment variables or .env file."
+    )
